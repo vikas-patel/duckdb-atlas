@@ -1,16 +1,16 @@
 import csv
 import duckdb
-import time
+import pandas as pd
 
 """
     A class to handle creating DuckDB tables, loading CSV data, and executing SQL queries.
 """
 class DuckDBTableLoader:
     def __init__(self, file_path: str, table_name: str, schema: dict):
-        self.__file_path = file_path  # Private file path
-        self.__table_name = table_name  # Private table name
-        self.__schema = schema  # Private table schema
-        self.__connection = duckdb.connect(database=':memory:', read_only=False)  # Initialize DuckDB connection
+        self.__file_path = file_path
+        self.__table_name = table_name
+        self.__schema = schema
+        self.__connection = duckdb.connect(database=':memory:', read_only=False)
         self.__load_spatial_extension()
 
     def __load_spatial_extension(self):
@@ -28,22 +28,53 @@ class DuckDBTableLoader:
         create_query = f'CREATE TABLE IF NOT EXISTS {self.__table_name} ({schema_definition})'
         self.__connection.execute(create_query)
 
-    def load_data_from_csv1(self):
-        # Load CSV directly into DuckDB using built-in function
-        try:
-            start_csv_time = time.time()
-            # Using DuckDB's built-in function to read CSV directly into the table
-            self.__connection.execute(f"""
-                COPY "{self.__table_name}" FROM '{self.__file_path}' (FORMAT CSV, HEADER TRUE)
-            """)
-            end_csv_time = time.time()
+    def fast_load_data_from_csv(self):
+        # Load CSV into a pandas DataFrame
+        df = pd.read_csv(self.__file_path)
 
-            print(f"Time spent in CSV iteration: {end_csv_time - start_csv_time:.2f} seconds")
-        except Exception as e:
-            print(f"Error during CSV loading: {e}")
+        # Convert 'Vehicle Location' into latitude and longitude columns
+        if 'Vehicle Location' in df.columns:
+            df[['lon', 'lat']] = df['Vehicle Location'].str.extract(r'POINT \(([\d\.\-]+) ([\d\.\-]+)\)')
+            df['lat'] = pd.to_numeric(df['lat'], errors='coerce')
+            df['lon'] = pd.to_numeric(df['lon'], errors='coerce')
+        else:
+            df['lat'], df['lon'] = None, None
+
+        # Drop the original 'Vehicle Location' column
+        df = df.drop(columns=['Vehicle Location'])
+
+        # Create a temporary table schema based on the schema
+        temp_table_name = f"{self.__table_name}_temp"
+        columns_def = ', '.join([f'"{col}" {dtype}' for col, dtype in self.__schema.items() if col != 'Vehicle Location'])
+        columns_def += ', "lat" DOUBLE, "lon" DOUBLE'
+
+        create_temp_table_query = f"""
+            CREATE TEMPORARY TABLE {temp_table_name} ({columns_def});
+        """
+        self.__connection.execute(create_temp_table_query)
+
+        self.__connection.register('temp_df', df)
+
+        # Insert data from the pandas DataFrame into the temporary table
+        insert_into_temp_table_query = f"""
+            INSERT INTO {temp_table_name}
+            SELECT * FROM temp_df;
+        """
+        self.__connection.execute(insert_into_temp_table_query)
+
+        # Insert data from the temporary table into the main table
+        insert_query = f"""
+            INSERT INTO "{self.__table_name}" (
+                {', '.join([f'"{col}"' for col in self.__schema if col != 'Vehicle Location'])},
+                "Vehicle Location"
+            )
+            SELECT {', '.join([f'"{col}"' for col in self.__schema if col != 'Vehicle Location'])}, 
+                ST_Point(lat, lon)
+            FROM {temp_table_name};
+        """
+        self.__connection.execute(insert_query)
 
     def load_data_from_csv(self):
-        start_csv_time = time.time()
         with open(self.__file_path, mode='r') as csv_file:
             csv_reader = csv.DictReader(csv_file)
             data = []
@@ -61,16 +92,13 @@ class DuckDBTableLoader:
 
                 data.append(values)
 
-            end_csv_time = time.time()
-            print(f"Time spent in CSV iteration: {end_csv_time - start_csv_time:.2f} seconds")
-
             # Prepare the insert query
             insert_query = f"""
                 INSERT INTO "{self.__table_name}" (
                     {', '.join([f'"{col}"' for col in self.__schema if col != 'Vehicle Location'])}, 
                     "Vehicle Location"
                 ) VALUES """
-            
+
             # Create a string of values for all rows
             values_list = []
             for vals in data:
@@ -89,18 +117,7 @@ class DuckDBTableLoader:
 
             # Join all value strings with commas
             insert_query += ', '.join(values_list)
-
-            end_csv_time = time.time()
-
-            print(f"Time spent in CSV iteration: {end_csv_time - start_csv_time:.2f} seconds")
-
-            # self.__connection.execute("BEGIN TRANSACTION;")
-            # Execute insert in batches for better performance
             self.__connection.execute(insert_query)
-            # self.__connection.execute("COMMIT;")
-
-            end_db_insert_time = time.time()
-            print(f"Time spent in DB insert: {end_db_insert_time - end_csv_time:.2f} seconds")
 
 
     def __convert_value(self, value, dtype):
@@ -112,11 +129,6 @@ class DuckDBTableLoader:
             return None
 
         return value
-
-    def reload_data(self):
-        """Clears the table and reloads data from the CSV file."""
-        self.__connection.execute(f"DELETE FROM {self.__table_name}")
-        self.load_data_from_csv()
 
     def execute_sql(self, query: str):
         """Executes an SQL query on the DuckDB connection and returns the result."""
