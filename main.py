@@ -6,6 +6,7 @@ from duckdb_loader import DuckDBTableLoader
 # Constants
 FILE_PATH = "data/Electric_Vehicle_Population_Data.csv"
 TABLE_NAME = "ev_population"
+OUTPUT_DIR = "."
 
 VEHICLE_SCHEMA = {
     "VIN (1-10)": "VARCHAR(10)",  # max length 10
@@ -71,6 +72,20 @@ MOST_POPULAR_VEHICLES_QUERY = f"""
     WHERE rank = 1;
 """
 
+# SQL query to count electric cars by model year
+COUNT_BY_YEAR_QUERY = f"""
+SELECT "Model Year", COUNT(*) as electric_car_count
+FROM {TABLE_NAME}
+GROUP BY "Model Year"
+"""
+
+# write the query result to Parquet files partitioned by "Model Year"
+PARQUET_WRITE_QUERY = f"""
+COPY (
+    {COUNT_BY_YEAR_QUERY}
+) TO '{OUTPUT_DIR}/electric_car_count.parquet'
+(FORMAT 'parquet', PARTITION_BY 'Model Year');
+"""
 
 logging.basicConfig(level=logging.INFO)
 
@@ -103,6 +118,9 @@ def main():
             result = loader.execute_sql(query)
             logging.info(f"{description} executed successfully.")
             print(f"{description}\n{result}\n")
+
+        loader.execute_sql(PARQUET_WRITE_QUERY)
+        print(f"Data successfully written to {OUTPUT_DIR} partitioned by Model Year.")
 
     except Exception as e:
         logging.error(f"Error executing query: {e}")
