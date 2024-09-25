@@ -1,4 +1,4 @@
-from duckdb_loader import DuckDBTableLoader
+from database_loader.duckdb_loader import DuckDBTableLoader
 import pytest
 import os
 import tempfile

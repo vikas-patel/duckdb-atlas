@@ -1,11 +1,12 @@
 import csv
+from database_loader.table_loader_interface import TableLoaderInterface
 import duckdb
 import pandas as pd
 
 """
     A class to handle creating DuckDB tables, loading CSV data, and executing SQL queries.
 """
-class DuckDBTableLoader:
+class DuckDBTableLoader(TableLoaderInterface):
     def __init__(self, file_path: str, table_name: str, schema: dict):
         self.__file_path = file_path
         self.__table_name = table_name
