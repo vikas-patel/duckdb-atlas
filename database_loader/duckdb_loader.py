@@ -1,4 +1,5 @@
 import csv
+import os
 from database_loader.table_loader_interface import TableLoaderInterface
 import duckdb
 import pandas as pd
@@ -29,7 +30,9 @@ class DuckDBTableLoader(TableLoaderInterface):
         create_query = f'CREATE TABLE IF NOT EXISTS {self.__table_name} ({schema_definition})'
         self.__connection.execute(create_query)
 
+    # Took 0.24s to insert 75k records
     def fast_load_data_from_csv(self):
+        """Using panda dataframe to bulk copy data to duckdb table"""
         # Load CSV into a pandas DataFrame
         df = pd.read_csv(self.__file_path)
 
@@ -75,7 +78,10 @@ class DuckDBTableLoader(TableLoaderInterface):
         """
         self.__connection.execute(insert_query)
 
+    # COPY File (below 1 seconds) < Multiline Array Insert (21 seconds) < Batch Prepared Statement (5 minutes)
+    # Took 21s to insert 75k records
     def load_data_from_csv(self):
+        """Using SQL native commands, works on all the SQL supported databases"""
         with open(self.__file_path, mode='r') as csv_file:
             csv_reader = csv.DictReader(csv_file)
             data = []
@@ -120,6 +126,51 @@ class DuckDBTableLoader(TableLoaderInterface):
             insert_query += ', '.join(values_list)
             self.__connection.execute(insert_query)
 
+    # Took 0.33s to insert 75k records
+    def load_data_from_csv_parquet(self):
+        """Using binary parquet file for low latency in data ingestion"""
+        parquet_file = self.__file_path.replace('.csv', '.parquet')
+        df = pd.read_csv(self.__file_path)
+
+        # Convert 'Vehicle Location' into latitude and longitude columns if available
+        if 'Vehicle Location' in df.columns:
+            df[['lon', 'lat']] = df['Vehicle Location'].str.extract(r'POINT \(([\d\.\-]+) ([\d\.\-]+)\)')
+            df['lat'] = pd.to_numeric(df['lat'], errors='coerce')
+            df['lon'] = pd.to_numeric(df['lon'], errors='coerce')
+        else:
+            df['lat'], df['lon'] = None, None
+
+        # Drop the original 'Vehicle Location' column
+        df = df.drop(columns=['Vehicle Location'])
+
+        # Save the DataFrame as a Parquet file
+        df.to_parquet(parquet_file, index=False)
+
+        # Load data into DuckDB from Parquet file
+        temp_table_name = f"{self.__table_name}_temp"
+        create_temp_table_query = f"""
+            CREATE TEMPORARY TABLE {temp_table_name} AS
+            SELECT * FROM read_parquet('{parquet_file}');
+        """
+
+        self.__connection.execute(create_temp_table_query)
+
+        # Insert data from the temporary table into the main table
+        insert_query = f"""
+            INSERT INTO "{self.__table_name}" (
+                {', '.join([f'"{col}"' for col in self.__schema if col != 'Vehicle Location'])},
+                "Vehicle Location"
+            )
+            SELECT {', '.join([f'"{col}"' for col in self.__schema if col != 'Vehicle Location'])}, 
+                ST_Point(lat, lon)
+            FROM {temp_table_name};
+        """
+
+        self.__connection.execute(insert_query)
+
+        # Clean up the Parquet file after use
+        if os.path.exists(parquet_file):
+            os.remove(parquet_file)
 
     def __convert_value(self, value, dtype):
         """
