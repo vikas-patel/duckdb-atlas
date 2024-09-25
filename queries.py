@@ -1,5 +1,5 @@
 # Queries related to electric cars
-TABLE_NAME = "ev_population"  # Replace with a dynamic variable if needed
+TABLE_NAME = "ev_population"
 OUTPUT_DIR = "data/output"  # Output directory for parquet files
 
 # Query for cars by city
