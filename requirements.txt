@@ -1,4 +1,4 @@
 pytest
 duckdb
 pandas
-fastparquet
+pyarrow
